@@ -1,0 +1,452 @@
+// ============================================
+// FELISIA BOT - TBL VERSION
+// Copy paste ke TeleBotHost Dashboard
+// ============================================
+
+// Konfigurasi
+var ADMIN_ID = 123456789;  // GANTI DENGAN ID TELEGRAM KAMU
+var GROQ_API_KEY = "gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";  // GANTI
+var BOT_NAME = "Felisia";
+
+// Database sederhana (pakai BDS bawaan TBL)
+var db = BDS.create("felisia_db");
+
+// ============================================
+// INISIALISASI DATABASE
+// ============================================
+if (!db.get("users")) {
+  db.set("users", {});
+}
+if (!db.get("banned")) {
+  db.set("banned", {});
+}
+if (!db.get("admins")) {
+  var admins = {};
+  admins[ADMIN_ID] = true;
+  db.set("admins", admins);
+}
+if (!db.get("groups")) {
+  db.set("groups", {});
+}
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+function saveUser(userId, username, firstName) {
+  var users = db.get("users");
+  users[userId] = {
+    username: username,
+    first_name: firstName,
+    last_active: Date.now()
+  };
+  db.set("users", users);
+}
+
+function isBanned(userId) {
+  var banned = db.get("banned");
+  return banned[userId] == true;
+}
+
+function isAdmin(userId) {
+  var admins = db.get("admins");
+  return admins[userId] == true;
+}
+
+function banUser(userId) {
+  var banned = db.get("banned");
+  banned[userId] = true;
+  db.set("banned", banned);
+}
+
+function unbanUser(userId) {
+  var banned = db.get("banned");
+  delete banned[userId];
+  db.set("banned", banned);
+}
+
+function addAdmin(userId) {
+  var admins = db.get("admins");
+  admins[userId] = true;
+  db.set("admins", admins);
+}
+
+function getAllUsers() {
+  return db.get("users");
+}
+
+function getGroupSettings(chatId) {
+  var groups = db.get("groups");
+  if (!groups[chatId]) {
+    groups[chatId] = {
+      welcome: "🎉 Selamat datang, {name}!\nSelamat bergabung di {chat_title}.",
+      leave: "👋 {name} telah meninggalkan grup."
+    };
+    db.set("groups", groups);
+  }
+  return groups[chatId];
+}
+
+// ============================================
+// AI CHAT (GROQ)
+// ============================================
+function askGroq(question, userName) {
+  var systemPrompt = "Kamu adalah Felisia, asisten AI yang ramah. User: " + userName + ". Jawab dalam bahasa Indonesia.";
+  
+  var res = Http.post({
+    url: "https://api.groq.com/openai/v1/chat/completions",
+    headers: {
+      "Authorization": "Bearer " + GROQ_API_KEY,
+      "Content-Type": "application/json"
+    },
+    body: {
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: question }
+      ],
+      temperature: 0.7,
+      max_tokens: 2048
+    }
+  });
+  
+  if (res && res.choices && res.choices.length > 0) {
+    return res.choices[0].message.content;
+  }
+  return "⚠️ Maaf, terjadi kesalahan saat menghubungi AI.";
+}
+
+// ============================================
+// COMMAND: /start
+// ============================================
+bot.command("start", function(ctx) {
+  var user = ctx.from;
+  saveUser(user.id, user.username, user.first_name);
+  
+  var text = "👋 *Halo " + user.first_name + "!* Aku " + BOT_NAME + ", asisten AI siap membantu kamu.\n\n";
+  text += "✨ *Fitur Unggulan:*\n";
+  text += "• Chat AI (Groq Llama 3.3)\n";
+  text += "• Jaga Grup (Sambut, Kick, Ban)\n";
+  text += "• Broadcast ke semua user\n";
+  text += "• Statistik pengguna\n\n";
+  text += "Ketik /help untuk lihat semua perintah.";
+  
+  ctx.reply(text, { parse_mode: "Markdown" });
+});
+
+// ============================================
+// COMMAND: /help
+// ============================================
+bot.command("help", function(ctx) {
+  var user = ctx.from;
+  var admin = isAdmin(user.id);
+  
+  var text = "📖 *Felisia Bot Help*\n\n";
+  text += "*Umum:*\n";
+  text += "/start - Mulai bot\n";
+  text += "/help - Bantuan\n";
+  text += "/ai [pertanyaan] - Tanya AI\n";
+  text += "/stats - Statistik pengguna\n\n";
+  
+  text += "*Grup (Harus jadi admin):*\n";
+  text += "/kick - Kick member (reply pesannya)\n";
+  text += "/mute - Mute member\n";
+  text += "/unmute - Unmute member\n";
+  text += "/ban - Ban user dari bot\n";
+  text += "/unban - Unban user\n\n";
+  
+  if (admin) {
+    text += "*👑 Admin Bot:*\n";
+    text += "/broadcast [pesan] - Kirim ke semua user\n";
+    text += "/addadmin - Tambah admin bot\n";
+  }
+  
+  ctx.reply(text, { parse_mode: "Markdown" });
+});
+
+// ============================================
+// COMMAND: /ai [pertanyaan]
+// ============================================
+bot.command("ai", function(ctx) {
+  var user = ctx.from;
+  
+  if (isBanned(user.id)) {
+    ctx.reply("⛔ Kamu telah dibanned dari menggunakan bot ini.");
+    return;
+  }
+  
+  var text = ctx.message.text;
+  if (text.length <= 4) {
+    ctx.reply("❓ Contoh: /ai Apa itu AI?");
+    return;
+  }
+  
+  var question = text.substr(4).trim();
+  saveUser(user.id, user.username, user.first_name);
+  
+  ctx.sendChatAction("typing");
+  var reply = askGroq(question, user.first_name);
+  ctx.reply(reply);
+});
+
+// ============================================
+// COMMAND: /stats
+// ============================================
+bot.command("stats", function(ctx) {
+  var users = getAllUsers();
+  var banned = db.get("banned");
+  
+  var totalUsers = Object.keys(users).length;
+  var totalBanned = Object.keys(banned).length;
+  
+  var text = "📊 *Statistik Felisia Bot*\n\n";
+  text += "👥 Total User: " + totalUsers + "\n";
+  text += "🚫 Dibanned: " + totalBanned;
+  
+  ctx.reply(text, { parse_mode: "Markdown" });
+});
+
+// ============================================
+// COMMAND: /ban (Admin Only)
+// ============================================
+bot.command("ban", function(ctx) {
+  var user = ctx.from;
+  
+  if (!isAdmin(user.id)) {
+    ctx.reply("❌ Kamu bukan admin bot!");
+    return;
+  }
+  
+  if (!ctx.message.reply_to_message) {
+    ctx.reply("❌ Reply pesan user yang mau di-ban!");
+    return;
+  }
+  
+  var target = ctx.message.reply_to_message.from;
+  banUser(target.id);
+  ctx.reply("🚫 " + target.first_name + " telah di-ban dari bot.");
+});
+
+// ============================================
+// COMMAND: /unban (Admin Only)
+// ============================================
+bot.command("unban", function(ctx) {
+  var user = ctx.from;
+  
+  if (!isAdmin(user.id)) {
+    ctx.reply("❌ Kamu bukan admin bot!");
+    return;
+  }
+  
+  var args = ctx.message.text.split(" ");
+  if (args.length < 2) {
+    ctx.reply("❌ Gunakan: /unban [user_id]");
+    return;
+  }
+  
+  var targetId = parseInt(args[1]);
+  unbanUser(targetId);
+  ctx.reply("✅ User " + targetId + " telah di-unban.");
+});
+
+// ============================================
+// COMMAND: /broadcast (Admin Only)
+// ============================================
+bot.command("broadcast", function(ctx) {
+  var user = ctx.from;
+  
+  if (!isAdmin(user.id)) {
+    ctx.reply("❌ Kamu bukan admin bot!");
+    return;
+  }
+  
+  var text = ctx.message.text;
+  if (text.length <= 11) {
+    ctx.reply("❌ Contoh: /broadcast Pesan penting!");
+    return;
+  }
+  
+  var message = text.substr(11).trim();
+  var users = getAllUsers();
+  var userIds = Object.keys(users);
+  
+  ctx.reply("📢 Mengirim broadcast ke " + userIds.length + " user...");
+  
+  var success = 0;
+  var failed = 0;
+  
+  for (var i = 0; i < userIds.length; i++) {
+    try {
+      bot.sendMessage(userIds[i], "📢 *Broadcast dari Admin*\n\n" + message, { parse_mode: "Markdown" });
+      success++;
+    } catch(e) {
+      failed++;
+    }
+  }
+  
+  ctx.reply("✅ Broadcast selesai!\nBerhasil: " + success + "\nGagal: " + failed);
+});
+
+// ============================================
+// COMMAND: /addadmin (Admin Only)
+// ============================================
+bot.command("addadmin", function(ctx) {
+  var user = ctx.from;
+  
+  if (!isAdmin(user.id)) {
+    ctx.reply("❌ Kamu bukan admin bot!");
+    return;
+  }
+  
+  if (!ctx.message.reply_to_message) {
+    ctx.reply("❌ Reply pesan user yang mau jadi admin!");
+    return;
+  }
+  
+  var target = ctx.message.reply_to_message.from;
+  addAdmin(target.id);
+  ctx.reply("👑 " + target.first_name + " sekarang admin bot!");
+});
+
+// ============================================
+// COMMAND: /kick (Grup)
+// ============================================
+bot.command("kick", function(ctx) {
+  if (ctx.chat.type == "private") {
+    ctx.reply("❌ Perintah ini hanya untuk grup!");
+    return;
+  }
+  
+  if (!ctx.message.reply_to_message) {
+    ctx.reply("❌ Reply pesan user yang mau di-kick!");
+    return;
+  }
+  
+  var target = ctx.message.reply_to_message.from;
+  
+  try {
+    bot.banChatMember(ctx.chat.id, target.id);
+    bot.unbanChatMember(ctx.chat.id, target.id);
+    ctx.reply("👢 " + target.first_name + " telah di-kick.");
+  } catch(e) {
+    ctx.reply("❌ Gagal kick user. Pastikan bot jadi admin!");
+  }
+});
+
+// ============================================
+// COMMAND: /mute (Grup)
+// ============================================
+bot.command("mute", function(ctx) {
+  if (ctx.chat.type == "private") {
+    ctx.reply("❌ Perintah ini hanya untuk grup!");
+    return;
+  }
+  
+  if (!ctx.message.reply_to_message) {
+    ctx.reply("❌ Reply pesan user yang mau di-mute!");
+    return;
+  }
+  
+  var target = ctx.message.reply_to_message.from;
+  
+  try {
+    bot.restrictChatMember(ctx.chat.id, target.id, { can_send_messages: false });
+    ctx.reply("🔇 " + target.first_name + " telah di-mute.");
+  } catch(e) {
+    ctx.reply("❌ Gagal mute user.");
+  }
+});
+
+// ============================================
+// COMMAND: /unmute (Grup)
+// ============================================
+bot.command("unmute", function(ctx) {
+  if (ctx.chat.type == "private") {
+    ctx.reply("❌ Perintah ini hanya untuk grup!");
+    return;
+  }
+  
+  if (!ctx.message.reply_to_message) {
+    ctx.reply("❌ Reply pesan user yang mau di-unmute!");
+    return;
+  }
+  
+  var target = ctx.message.reply_to_message.from;
+  
+  try {
+    bot.restrictChatMember(ctx.chat.id, target.id, { can_send_messages: true });
+    ctx.reply("🔊 " + target.first_name + " telah di-unmute.");
+  } catch(e) {
+    ctx.reply("❌ Gagal unmute user.");
+  }
+});
+
+// ============================================
+// EVENT: Member Baru Masuk Grup
+// ============================================
+bot.on("new_chat_members", function(ctx) {
+  var chat = ctx.chat;
+  var settings = getGroupSettings(chat.id);
+  
+  for (var i = 0; i < ctx.message.new_chat_members.length; i++) {
+    var member = ctx.message.new_chat_members[i];
+    
+    if (member.id == bot.id) continue;
+    
+    var welcome = settings.welcome;
+    welcome = welcome.replace("{name}", member.first_name);
+    welcome = welcome.replace("{chat_title}", chat.title);
+    
+    ctx.reply(welcome);
+  }
+});
+
+// ============================================
+// EVENT: Member Keluar Grup
+// ============================================
+bot.on("left_chat_member", function(ctx) {
+  var chat = ctx.chat;
+  var member = ctx.message.left_chat_member;
+  
+  if (member.id == bot.id) return;
+  
+  var settings = getGroupSettings(chat.id);
+  var leave = settings.leave;
+  leave = leave.replace("{name}", member.first_name);
+  
+  ctx.reply(leave);
+});
+
+// ============================================
+// HANDLER: Chat Biasa (AI Response)
+// ============================================
+bot.on("message", function(ctx) {
+  var user = ctx.from;
+  var text = ctx.message.text;
+  
+  // Abaikan command
+  if (text && text.startsWith("/")) return;
+  
+  // Cek banned
+  if (isBanned(user.id)) {
+    ctx.reply("⛔ Kamu telah dibanned.");
+    return;
+  }
+  
+  // Abaikan pesan kosong
+  if (!text) return;
+  
+  // Save user
+  saveUser(user.id, user.username, user.first_name);
+  
+  // Private chat = auto AI response
+  if (ctx.chat.type == "private") {
+    ctx.sendChatAction("typing");
+    var reply = askGroq(text, user.first_name);
+    ctx.reply(reply);
+  }
+});
+
+// ============================================
+// BOT SIAP
+// ============================================
+bot.sendMessage(ADMIN_ID, "🤖 *Felisia Bot telah online!*\n\n✅ Semua fitur siap digunakan.", { parse_mode: "Markdown" });
